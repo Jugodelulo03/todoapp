@@ -1,0 +1,7 @@
+node_modules/
+.vagrant/
+.tmp/
+.env
+.env.deploy
+npm-debug.log*
+yarn-error.log*
