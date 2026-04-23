@@ -1,23 +1,30 @@
 pipeline {
+    // Todo el pipeline debe ejecutarse en el agente que tenga Docker disponible.
     agent { label 'docker-agent' }
 
     options {
+        // Evita dos builds simultaneos del mismo job para no pisar workspaces ni despliegues.
         disableConcurrentBuilds()
+        // Agrega hora a cada linea del log para facilitar el diagnostico.
         timestamps()
     }
 
     environment {
+        // Nombre base del repositorio de imagen que se publicara en Docker Hub.
         IMAGE_REPOSITORY = 'todoapp'
+        // Archivo temporal con variables de entorno para el despliegue.
         DEPLOY_ENV_FILE = '.env.deploy'
         MYSQL_DATABASE = 'todoapp'
         MYSQL_USER = 'todoapp'
     }
 
     stages {
+        // Descarga el codigo y prepara un tag reproducible para la imagen.
         stage('Checkout') {
             steps {
                 checkout scm
                 script {
+                    // Usa el hash corto del commit para que el tag apunte exactamente al codigo construido.
                     env.SHORT_COMMIT = sh(
                         script: 'git rev-parse --short=7 HEAD',
                         returnStdout: true,
@@ -27,8 +34,10 @@ pipeline {
             }
         }
 
+        // Ejecuta pruebas en un contenedor Linux aislado, sin depender del sistema operativo del host.
         stage('Test') {
             steps {
+                // Monta el workspace de Jenkins dentro del contenedor y fuerza SQLite temporal.
                 sh '''
                     set -eu
                     docker run --rm \
@@ -42,6 +51,7 @@ pipeline {
             }
         }
 
+        // Solo desde ramas principales se construye y publica una imagen reutilizable.
         stage('Build And Release') {
             when {
                 expression {
@@ -56,6 +66,9 @@ pipeline {
                         passwordVariable: 'DOCKERHUB_TOKEN',
                     ),
                 ]) {
+                    // Tag final que se publicara en Docker Hub.
+                    // Estas variables completan docker-compose durante la build, pero no son secretos reales.
+                    // Login, build y push de la imagen de la aplicacion.
                     sh '''
                         set -eu
                         export APP_IMAGE="$DOCKERHUB_USERNAME/$IMAGE_REPOSITORY:$IMAGE_TAG"
@@ -70,6 +83,7 @@ pipeline {
             }
         }
 
+        // Despliega la imagen publicada junto con MySQL y Nginx en el agente.
         stage('Deploy') {
             when {
                 expression {
@@ -92,6 +106,8 @@ pipeline {
                         variable: 'MYSQL_ROOT_PASSWORD',
                     ),
                 ]) {
+                    // Genera el archivo que docker compose usara para inyectar secretos y nombre de imagen.
+                    // Descarga la imagen exacta y actualiza el stack en segundo plano.
                     sh '''
                         set -eu
                         cat > "$DEPLOY_ENV_FILE" <<EOF
@@ -110,6 +126,7 @@ EOF
             }
         }
 
+        // Verifica que el despliegue ya responda por HTTP antes de dar el pipeline por exitoso.
         stage('Smoke Test') {
             when {
                 expression {
@@ -117,6 +134,7 @@ EOF
                 }
             }
             steps {
+                // Reintenta varias veces porque MySQL y la app pueden tardar en quedar listos.
                 sh '''
                     set -eu
                     for attempt in $(seq 1 15); do
@@ -133,7 +151,9 @@ EOF
 
     post {
         always {
+            // Limpia archivos temporales del workspace para dejar el agente listo para el siguiente build.
             sh 'rm -f "$DEPLOY_ENV_FILE" package-lock.json; rm -rf .tmp node_modules'
+            // Guarda estos archivos como evidencia del build ejecutado.
             archiveArtifacts artifacts: 'Dockerfile,Jenkinsfile,Vagrantfile,docker-compose.yml,nginx/default.conf', fingerprint: true
         }
     }
